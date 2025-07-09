@@ -1,0 +1,19 @@
+
+# Arquivos .gitkeep para manter estrutura de diretórios
+
+Criar os seguintes arquivos vazios:
+
+## data/raw/.gitkeep
+```
+# Manter diretório para arquivos originais
+```
+
+## data/processed/.gitkeep
+```
+# Manter diretório para arquivos processados
+```
+
+## logs/.gitkeep
+```
+# Manter diretório para logs e relatórios
+```

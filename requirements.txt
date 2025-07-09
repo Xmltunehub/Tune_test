@@ -1,0 +1,15 @@
+# Requisitos para processamento de XML e HTTP
+requests>=2.31.0
+python-dateutil>=2.8.2
+
+# Processamento XML
+lxml>=4.9.3
+
+# Logging avançado (opcional mas recomendado)
+colorlog>=6.7.0
+
+# Validação de dados (opcional)
+jsonschema>=4.17.3
+
+# Timezone handling
+pytz>=2023.3

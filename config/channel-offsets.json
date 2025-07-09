@@ -1,0 +1,27 @@
+
+{
+  "default_offset": 30,
+  "channels": {
+    "rtp1.pt": {
+      "offset": 30,
+      "description": "RTP1 - Ajuste padrão"
+    },
+    "rtp2.pt": {
+      "offset": 45,
+      "description": "RTP2 - Ajuste personalizado"
+    },
+    "sic.pt": {
+      "offset": 30,
+      "description": "SIC - Ajuste padrão"
+    },
+    "tvi.pt": {
+      "offset": 30,
+      "description": "TVI - Ajuste padrão"
+    }
+  },
+  "metadata": {
+    "last_updated": "2025-01-01T00:00:00Z",
+    "version": "1.0.0",
+    "notes": "Ajustes em segundos. Valores positivos adiantam, negativos atrasam."
+  }
+}
