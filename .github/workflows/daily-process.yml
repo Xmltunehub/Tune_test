@@ -1,245 +1,73 @@
-# .github/workflows/daily-process.yml
 name: Daily XML Processing
 
 on:
   schedule:
-    # Executa diariamente às 06:00 UTC
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *'  # Executa às 6:00 UTC diariamente
   workflow_dispatch:
     inputs:
-      force_process:
-        description: 'Forçar processamento mesmo sem mudanças'
+      channel:
+        description: 'Canal específico para processar'
         required: false
-        default: false
-        type: boolean
-      time_offset:
-        description: 'Offset de tempo personalizado (segundos)'
-        required: false
-        default: '30'
         type: string
-
-permissions:
-  contents: write
-  issues: write
+      offset:
+        description: 'Offset específico em segundos'
+        required: false
+        type: string
+      force_download:
+        description: 'Forçar download'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   process-xml:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        
+      
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
-        cache: 'pip'
-        
-    - name: Create required directories
-      run: |
-        mkdir -p logs data/raw data/processed
+        python-version: '3.9'
         
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: Check source changes
-      id: check-changes
+    - name: Create directories
       run: |
-        if [ -f "data/last_source_check.txt" ]; then
-          LAST_CHECK=$(cat data/last_source_check.txt)
-          echo "last_check=$LAST_CHECK" >> $GITHUB_OUTPUT
+        mkdir -p data/raw data/processed data/reports logs
+        
+    - name: Process XML with channel-specific settings
+      run: |
+        if [ "${{ github.event.inputs.channel }}" != "" ] && [ "${{ github.event.inputs.offset }}" != "" ]; then
+          echo "Processando canal específico: ${{ github.event.inputs.channel }} com offset ${{ github.event.inputs.offset }}"
+          python run.py --channel "${{ github.event.inputs.channel }}" --channel-offset "${{ github.event.inputs.offset }}" --save-config
         else
-          echo "last_check=0" >> $GITHUB_OUTPUT
+          echo "Processando todos os canais"
+          python run.py
         fi
-        echo "current_time=$(date +%s)" >> $GITHUB_OUTPUT
         
-    - name: Run processor
+    - name: Upload processed files
+      uses: actions/upload-artifact@v3
+      with:
+        name: processed-epg
+        path: data/processed/
+        
+    - name: Upload reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: processing-reports
+        path: data/reports/
+        
+    - name: Commit updated configuration
+      if: github.event.inputs.channel != '' && github.event.inputs.offset != ''
       run: |
-        export PYTHONPATH="${PYTHONPATH}:${{ github.workspace }}/src"
-        # Executar do diretório raiz onde está o run.py
-        OFFSET="${{ inputs.time_offset || '30' }}"
-        if [ "${{ inputs.force_process }}" == "true" ]; then
-          python run.py --force --log-level DEBUG --offset "$OFFSET"
-        else
-          python run.py --log-level INFO --offset "$OFFSET"
-        fi
-        
-    - name: Generate processing report
-      if: always()
-      run: |
-        echo "# 📊 Relatório de Processamento EPG" > processing_report.md
-        echo "" >> processing_report.md
-        echo "**Data:** $(date)" >> processing_report.md
-        echo "**Commit:** ${{ github.sha }}" >> processing_report.md
-        echo "**Offset aplicado:** ${{ inputs.time_offset || '30' }} segundos" >> processing_report.md
-        echo "" >> processing_report.md
-        
-        if [ -f "adjusted_schedule.xml.gz" ]; then
-          FILE_SIZE=$(stat -c%s "adjusted_schedule.xml.gz")
-          echo "**Arquivo gerado:** adjusted_schedule.xml.gz (${FILE_SIZE} bytes)" >> processing_report.md
-        fi
-        
-        echo "" >> processing_report.md
-        echo "## 📋 Últimas linhas do log:" >> processing_report.md
-        echo "\`\`\`" >> processing_report.md
-        if [ -f "logs/processing_$(date +%Y%m%d)*.log" ]; then
-          tail -20 logs/processing_$(date +%Y%m%d)*.log >> processing_report.md
-        fi
-        echo "\`\`\`" >> processing_report.md
-        
-    - name: Check for changes
-      id: verify-changed-files
-      run: |
-        git add .
-        if [ -n "$(git diff --staged --name-only)" ]; then
-          echo "changed=true" >> $GITHUB_OUTPUT
-          echo "files=$(git diff --staged --name-only | tr '\n' ' ')" >> $GITHUB_OUTPUT
-        else
-          echo "changed=false" >> $GITHUB_OUTPUT
-          echo "files=" >> $GITHUB_OUTPUT
-        fi
-        
-    - name: Commit and push changes
-      if: steps.verify-changed-files.outputs.changed == 'true'
-      run: |
-        git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
-        
-        git commit -m "🤖 Processamento EPG automático - $(date +'%Y-%m-%d %H:%M:%S')" \
-                   -m "Arquivos alterados: ${{ steps.verify-changed-files.outputs.files }}" \
-                   -m "Offset aplicado: ${{ inputs.time_offset || '30' }} segundos" \
-                   -m "Workflow: ${{ github.workflow }}" \
-                   -m "Run ID: ${{ github.run_id }}"
-        
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add config/channel-offsets.json
+        git diff --staged --quiet || git commit -m "Ajuste automático: canal ${{ github.event.inputs.channel }} -> ${{ github.event.inputs.offset }}s"
         git push
-        
-    - name: Update processing timestamp
-      if: always()
-      run: |
-        echo "$(date +%s)" > data/last_processing.txt
-        
-    - name: Upload processing artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: processing-logs-${{ github.run_id }}
-        path: |
-          logs/
-          processing_report.md
-          data/processed/
-        retention-days: 30
-        compression-level: 6
-        
-    - name: Upload processed XML
-      if: success() && hashFiles('adjusted_schedule.xml.gz') != ''
-      uses: actions/upload-artifact@v4
-      with:
-        name: processed-xml-${{ github.run_id }}
-        path: adjusted_schedule.xml.gz
-        retention-days: 7
-        
-    - name: Create issue on failure
-      if: failure()
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const title = `❌ Falha no processamento EPG - ${new Date().toISOString().split('T')[0]}`;
-          const body = `
-          ## 🚨 Erro no Processamento EPG
-          
-          **Workflow:** ${{ github.workflow }}
-          **Run ID:** ${{ github.run_id }}
-          **Commit:** ${{ github.sha }}
-          **Data:** ${new Date().toISOString()}
-          **Offset:** ${{ inputs.time_offset || '30' }} segundos
-          
-          ### 🔍 Detalhes
-          - Executado em: ${{ runner.os }}
-          - Trigger: ${{ github.event_name }}
-          - Branch: ${{ github.ref }}
-          
-          ### 📊 Logs
-          Verifique os artifacts desta execução para mais detalhes.
-          
-          ### 🛠️ Próximos passos
-          1. Verificar os logs nos artifacts
-          2. Validar a fonte EPG
-          3. Verificar configurações de canais
-          4. Re-executar manualmente se necessário
-          
-          ---
-          *Issue criada automaticamente pelo GitHub Actions*
-          `;
-          
-          github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: title,
-            body: body,
-            labels: ['bug', 'automated', 'processing-error']
-          });
-          
-    - name: Summary
-      if: always()
-      run: |
-        echo "## 📊 Resumo do Processamento" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "| Item | Status |" >> $GITHUB_STEP_SUMMARY
-        echo "|------|---------|" >> $GITHUB_STEP_SUMMARY
-        echo "| Processamento | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| Arquivos alterados | ${{ steps.verify-changed-files.outputs.changed }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| Offset aplicado | ${{ inputs.time_offset || '30' }}s |" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "adjusted_schedule.xml.gz" ]; then
-          FILE_SIZE=$(stat -c%s "adjusted_schedule.xml.gz")
-          echo "| Arquivo XML | ${FILE_SIZE} bytes |" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 🔗 Links úteis" >> $GITHUB_STEP_SUMMARY
-        echo "- [Artifacts desta execução](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
-        echo "- [Histórico de execuções](https://github.com/${{ github.repository }}/actions/workflows/daily-process.yml)" >> $GITHUB_STEP_SUMMARY
-
----
-name: Cleanup Old Artifacts
-
-on:
-  schedule:
-    - cron: '0 2 * * 0'  # Domingo às 02:00 UTC
-  workflow_dispatch:
-
-permissions:
-  actions: write
-
-jobs:
-  cleanup:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Delete old artifacts
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const artifacts = await github.rest.actions.listArtifactsForRepo({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            per_page: 100
-          });
-          
-          const cutoffDate = new Date();
-          cutoffDate.setDate(cutoffDate.getDate() - 30);
-          
-          for (const artifact of artifacts.data.artifacts) {
-            if (new Date(artifact.created_at) < cutoffDate) {
-              console.log(`Deletando artifact: ${artifact.name} (${artifact.created_at})`);
-              await github.rest.actions.deleteArtifact({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                artifact_id: artifact.id
-              });
-            }
-          }
