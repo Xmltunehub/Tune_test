@@ -8,9 +8,18 @@ import os
 logger = logging.getLogger(__name__)
 
 class XmlTimeAdjuster:
-    def __init__(self):
-        self.channels_processed = 0
-        self.programs_processed = 0
+    def __init__(self, channel_offsets: Dict[str, Dict] = None, default_offset: int = 30):
+        """
+        Inicializa o ajustador de horários XML
+        
+        Args:
+            channel_offsets: Dicionário com configurações por canal
+            default_offset: Offset padrão em segundos
+        """
+        self.channel_offsets = channel_offsets or {}
+        self.default_offset = default_offset
+        self.processed_programmes = 0
+        self.processed_channels = set()
         self.errors = []
         
     def parse_datetime(self, dt_str: str) -> Optional[datetime]:
@@ -37,35 +46,104 @@ class XmlTimeAdjuster:
         """
         return dt.strftime("%Y%m%d%H%M%S +0000")
     
+    def _adjust_time(self, time_str: str, offset_seconds: int) -> Optional[str]:
+        """
+        Ajusta uma string de tempo específica
+        
+        Args:
+            time_str: String de tempo no formato XML
+            offset_seconds: Segundos para ajustar
+            
+        Returns:
+            String de tempo ajustada ou None se erro
+        """
+        try:
+            dt = self.parse_datetime(time_str)
+            if dt:
+                adjusted_dt = dt + timedelta(seconds=offset_seconds)
+                return self.format_datetime(adjusted_dt)
+            return None
+        except Exception as e:
+            logger.warning(f"Erro ao ajustar tempo '{time_str}': {e}")
+            return None
+    
+    def adjust_times(self, tree: ET.ElementTree, specific_channel: Optional[str] = None) -> ET.ElementTree:
+        """
+        Ajusta horários no XML EPG
+        
+        Args:
+            tree: Árvore XML para processar
+            specific_channel: Se especificado, processa apenas este canal
+            
+        Returns:
+            Árvore XML com horários ajustados
+        """
+        root = tree.getroot()
+        
+        # Encontrar todos os programas
+        if specific_channel:
+            programmes = root.findall(f".//programme[@channel='{specific_channel}']")
+            logger.info(f"Processando {len(programmes)} programas do canal {specific_channel}")
+        else:
+            programmes = root.findall('.//programme')
+            logger.info(f"Processando {len(programmes)} programas total")
+        
+        for programme in programmes:
+            channel_id = programme.get('channel')
+            if not channel_id:
+                continue
+            
+            # Obter offset para o canal
+            channel_config = self.channel_offsets.get(channel_id, {})
+            offset_seconds = channel_config.get('offset', self.default_offset)
+            
+            # Ajustar horário de início
+            start_time = programme.get('start')
+            if start_time:
+                new_start = self._adjust_time(start_time, offset_seconds)
+                if new_start:
+                    programme.set('start', new_start)
+            
+            # Ajustar horário de fim
+            stop_time = programme.get('stop')
+            if stop_time:
+                new_stop = self._adjust_time(stop_time, offset_seconds)
+                if new_stop:
+                    programme.set('stop', new_stop)
+            
+            self.processed_programmes += 1
+            self.processed_channels.add(channel_id)
+        
+        logger.info(f"Processados {self.processed_programmes} programas de {len(self.processed_channels)} canais")
+        return tree
+    
     def adjust_program_times(self, program: ET.Element, offset_seconds: int):
         """
-        Ajusta horários de um programa específico
+        Ajusta horários de um programa específico (método legado mantido para compatibilidade)
         """
         try:
             # Ajustar horário de início
             start_attr = program.get('start')
             if start_attr:
-                start_dt = self.parse_datetime(start_attr)
-                if start_dt:
-                    new_start = start_dt + timedelta(seconds=offset_seconds)
-                    program.set('start', self.format_datetime(new_start))
+                new_start = self._adjust_time(start_attr, offset_seconds)
+                if new_start:
+                    program.set('start', new_start)
             
             # Ajustar horário de fim
             stop_attr = program.get('stop')
             if stop_attr:
-                stop_dt = self.parse_datetime(stop_attr)
-                if stop_dt:
-                    new_stop = stop_dt + timedelta(seconds=offset_seconds)
-                    program.set('stop', self.format_datetime(new_stop))
+                new_stop = self._adjust_time(stop_attr, offset_seconds)
+                if new_stop:
+                    program.set('stop', new_stop)
             
-            self.programs_processed += 1
+            self.processed_programmes += 1
             
         except Exception as e:
             error_msg = f"Erro ao ajustar programa: {e}"
             logger.error(error_msg)
             self.errors.append(error_msg)
     
-    def process_xml(self, input_path: str, output_path: str, channel_offsets: Dict[str, int], default_offset: int = 30):
+    def process_xml(self, input_path: str, output_path: str, channel_offsets: Dict[str, int] = None, default_offset: int = 30):
         """
         Processa o arquivo XML aplicando ajustes de tempo
         
@@ -77,36 +155,31 @@ class XmlTimeAdjuster:
         """
         logger.info(f"Iniciando processamento: {input_path}")
         
+        # Atualizar configurações se fornecidas
+        if channel_offsets:
+            self.channel_offsets = {
+                channel_id: {'offset': offset} 
+                for channel_id, offset in channel_offsets.items()
+            }
+        self.default_offset = default_offset
+        
         try:
             # Carregar XML
             tree = ET.parse(input_path)
-            root = tree.getroot()
             
-            # Processar cada canal
-            for channel in root.findall('channel'):
-                channel_id = channel.get('id', 'unknown')
-                
-                # Determinar offset para este canal
-                offset = channel_offsets.get(channel_id, default_offset)
-                
-                logger.debug(f"Processando canal {channel_id} com offset {offset}s")
-                
-                # Processar programas do canal
-                programs = root.findall(f"programme[@channel='{channel_id}']")
-                for program in programs:
-                    self.adjust_program_times(program, offset)
-                
-                self.channels_processed += 1
+            # Processar com o novo método
+            processed_tree = self.adjust_times(tree)
             
             # Adicionar comentário com informações do processamento
-            comment_text = f" Processado em {datetime.now().isoformat()} - {self.programs_processed} programas ajustados "
+            root = processed_tree.getroot()
+            comment_text = f" Processado em {datetime.now().isoformat()} - {self.processed_programmes} programas ajustados "
             comment = ET.Comment(comment_text)
             root.insert(0, comment)
             
             # Salvar arquivo processado
-            tree.write(output_path, encoding='utf-8', xml_declaration=True)
+            processed_tree.write(output_path, encoding='utf-8', xml_declaration=True)
             
-            logger.info(f"Processamento concluído: {self.channels_processed} canais, {self.programs_processed} programas")
+            logger.info(f"Processamento concluído: {len(self.processed_channels)} canais, {self.processed_programmes} programas")
             
         except Exception as e:
             error_msg = f"Erro no processamento XML: {e}"
@@ -135,8 +208,8 @@ class XmlTimeAdjuster:
         Retorna estatísticas do processamento
         """
         return {
-            "channels_processed": self.channels_processed,
-            "programs_processed": self.programs_processed,
+            "channels_processed": len(self.processed_channels),
+            "programs_processed": self.processed_programmes,
             "errors_count": len(self.errors),
             "errors": self.errors
         }
